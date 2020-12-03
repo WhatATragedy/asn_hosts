@@ -7,7 +7,9 @@ import ipaddress
 import json
 import argparse
 import logging
-from elasticsearch import Elasticsearch
+from elasticsearch import Elasticsearch, helpers
+from datetime import datetime
+import uuid
 
 _base_url = "http://data.caida.org/datasets/routing/routeviews-prefix2as/"
 def get_iptoasn_files(dir):
@@ -72,7 +74,6 @@ def es_connect(hostname):
     return es
 
 def send_elements_to_es(es, data):
-    full_list = []
     id_val = 0
     for date in data.keys():
         for key, val in data[date].items():
@@ -85,15 +86,27 @@ def send_elements_to_es(es, data):
             id_val += 1
     return True
 
+def send_bulk_to_es(es, data):
+    actions = batch_elements(data)
+    helpers.bulk(es, actions)
+
 def batch_elements(data):
     full_list = []
     for date in data.keys():
-        for key, val in data[date].items():
+        for asn, hosts in data[date].items():
+            date_obj = datetime.strptime(date, "%Y%m%d")
             node = {
-                'File': date,
-                'ASN': key,
-                'Hosts': val
+                "_index": "blaze6",
+                "_type": "asn_adverts",
+                '_id': uuid.uuid4(),
+                "_source": {
+                    'date': date_obj,
+                    'asn': asn,
+                    'hosts': hosts
+                }
             }
+            full_list.append(node)
+    return full_list
 
 
 
@@ -114,6 +127,9 @@ if __name__ == "__main__":
 
     parser.add_argument('-lf', '--loadFile', type=str, dest="inputFilename",
                         help='Load already processed IPtoASN file if already pulled down')
+    parser.add_argument('-lD', '--loadDir', type=str, dest="inputDir",
+                        help='Load IP to ASN files already pulled down')
+
     logging.debug("Starting BlazeBois...")
     args = parser.parse_args()
     print(args)
@@ -121,18 +137,21 @@ if __name__ == "__main__":
         dir = args.dir
     else:
         dir = "iptoasn"
-    if args.inputFilename:
-        data = json_to_dict(args.inputFilename)
+    if args.inputDir and not args.inputFilename:
+        #iptoasn files already on disk
+        data = convert_files(args.inputDir)
     else:
         get_iptoasn_files(dir)
         data = convert_files(dir)
+    if args.inputFilename:
+        data = json_to_dict(args.inputFilename)
     if args.outputFilename:
         logging.debug("Outputing to file...")  
         dict_to_json_file(data, args.outputFilename) 
     elif args.elastic:
         logging.debug(f"Outputing to elastic at {args.elastic}...")
         es = es_connect(args.elastic)
-        send_elements_to_es(es, data)
+        send_bulk_to_es(es, data)
     else:
         logging.debug("Outputing Nowhere...")
 
